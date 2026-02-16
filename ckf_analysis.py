@@ -85,7 +85,7 @@ def plot_rpm_comparison(data, t0, rpm_label, test_idx, output_dir):
 
     fig, ax = plt.subplots(figsize=(7, 2.8))
     ax.plot(t_actual, rpm_actual, color=C_ACTUAL, linewidth=0.8, alpha=0.7, label='Measured RPM')
-    ax.plot(t_ckf, rpm_ckf, color=C_CKF, linewidth=0.8, alpha=0.8, label='CKF Estimated RPM')
+    ax.plot(t_ckf, rpm_ckf, color=C_CKF, linewidth=0.8, alpha=0.8, label='Bag Estimated RPM')
     ax.set_xlabel('Time [s]')
     ax.set_ylabel('RPM')
     ax.set_title(f'{rpm_label} / Test {test_idx} — RPM (RMSE = {rmse:.2f} RPM)')
@@ -111,7 +111,7 @@ def plot_acc_comparison(data, t0, rpm_label, test_idx, output_dir):
     ax.plot(t_diff, acc_diff, color=C_ACTUAL, linewidth=0.5, alpha=0.5,
             label='Numerical diff (measured)')
     ax.plot(t_ckf, acc_ckf, color=C_CKF, linewidth=0.8, alpha=0.8,
-            label='CKF Estimated')
+            label='Bag Estimated')
     ax.set_xlabel('Time [s]')
     ax.set_ylabel('Acceleration [RPM/s]')
     ax.set_title(f'{rpm_label} / Test {test_idx} — Acceleration (RMSE = {rmse:.2f} RPM/s)')
@@ -452,17 +452,17 @@ def print_and_save_summary(per_test_stats, all_rpm_errors, all_acc_errors,
 # Main
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='CKF Acceleration Estimation Analysis')
+    parser = argparse.ArgumentParser(description='Bag Acceleration Estimation Analysis')
 
     parser.add_argument('base_dir', type=str,
-                        help='Base directory (e.g., CKF)')
+                        help='Base directory (e.g., Bag)')
     parser.add_argument('--rpm-folders', nargs='+', type=str,
                         default=['4000RPM', '5000RPM'],
                         help='RPM folder names (default: 4000RPM 5000RPM)')
     parser.add_argument('--num-tests', type=int, default=5,
                         help='Number of test bags per RPM (default: 5)')
-    parser.add_argument('--output-dir', type=str, default='./analysis',
-                        help='Output directory (default: ./analysis)')
+    parser.add_argument('--output-dir', type=str, default='./result',
+                        help='Output directory (default: ./result)')
 
     args = parser.parse_args()
 

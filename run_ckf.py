@@ -251,7 +251,8 @@ def plot_sine_fit(t_seg, sig_seg, popt, ylabel, label, test_idx,
     residual = sig_seg - sine_model(t_shifted, *popt)
     rmse = np.sqrt(np.mean(residual**2))
 
-    fig, axes = plt.subplots(2, 1, figsize=(8, 5), height_ratios=[3, 1],
+    fig, axes = plt.subplots(2, 1, figsize=(8, 5),
+                              gridspec_kw={'height_ratios': [3, 1]},
                               sharex=True)
     axes[0].plot(t_seg, sig_seg, color=C_ACTUAL, lw=0.7, alpha=0.7,
                  label='Data')

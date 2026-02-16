@@ -168,6 +168,56 @@ def plot_rpm_overview(t_actual, rpm_actual, t_ckf, rpm_ckf,
     plt.close(fig)
 
 
+C_3SIGMA = '#FBBF24'  # amber
+
+
+def plot_3sigma_bounds(t, rpm_err, acc_err, P_est, label, test_idx, out_dir):
+    """Plot RPM and acceleration error with 3-sigma bounds."""
+    rpm_3sig = 3.0 * np.sqrt(P_est[:, 0, 0])
+    rpm_within = np.sum(np.abs(rpm_err) <= rpm_3sig) / len(rpm_err) * 100
+
+    acc_3sig = 3.0 * np.sqrt(P_est[:, 1, 1])
+    # Exclude edges for acc (numerical diff artifacts)
+    sl = slice(50, -50)
+    acc_within = np.sum(
+        np.abs(acc_err[sl]) <= acc_3sig[sl]) / len(acc_err[sl]) * 100
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 5.5), sharex=True)
+
+    # RPM error + 3σ
+    axes[0].fill_between(t, -rpm_3sig, rpm_3sig,
+                          color=C_3SIGMA, alpha=0.3,
+                          label=r'$\pm 3\sigma$ bound')
+    axes[0].plot(t, rpm_err, color=C_ACTUAL, lw=0.5, alpha=0.7,
+                 label='RPM error')
+    axes[0].set_ylabel('RPM Error')
+    axes[0].set_title(
+        f'{label} / Test {test_idx} — RPM Error '
+        r'$\pm 3\sigma$'
+        f' ({rpm_within:.1f}% within)')
+    axes[0].legend(loc='upper right', fontsize=9)
+
+    # Acc error + 3σ
+    axes[1].fill_between(t, -acc_3sig, acc_3sig,
+                          color=C_3SIGMA, alpha=0.3,
+                          label=r'$\pm 3\sigma$ bound')
+    axes[1].plot(t, acc_err, color=C_ACTUAL, lw=0.5, alpha=0.7,
+                 label='Acc error')
+    axes[1].set_xlabel('Time [s]')
+    axes[1].set_ylabel('Acc Error [RPM/s]')
+    axes[1].set_title(
+        f'Acceleration Error '
+        r'$\pm 3\sigma$'
+        f' ({acc_within:.1f}% within)')
+    axes[1].legend(loc='upper right', fontsize=9)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / f'{label}_test{test_idx}_3sigma.png')
+    plt.close(fig)
+
+    return rpm_within, acc_within
+
+
 def plot_acc_overview(t_ckf, acc_ckf, t_actual, rpm_actual,
                       label, test_idx, out_dir):
     """Acceleration: CKF vs numerical derivative of measurement."""
@@ -403,7 +453,8 @@ def save_summary(summary_rows, out_dir):
     """Save summary to CSV and TXT."""
     header = [
         'Condition', 'Test',
-        'RPM_RMSE', 'Vel_Fit_RMSE', 'Vel_Fit_A', 'Vel_Fit_f',
+        'RPM_RMSE', 'RPM_3sigma%', 'Acc_3sigma%',
+        'Vel_Fit_RMSE', 'Vel_Fit_A', 'Vel_Fit_f',
         'Acc_Fit_RMSE', 'Acc_Fit_A', 'Acc_Fit_f',
     ]
     csv_path = out_dir / 'ckf_run_summary.csv'
@@ -442,11 +493,10 @@ def main():
     )
 
     # ── CKF tuning ──
-    # Q: process noise – moderate trust in model
-    #   omega noise std ~ 5 RPM per step,  alpha noise std ~ 500 RPM/s per step
-    Q = np.diag([5.0**2, 500.0**2])
-    # R: measurement noise variance – actual RPM sensor std ~ 10 RPM
-    R = 10.0**2
+    # Tuned for ~99.7% RPM 3-sigma coverage and ~98% acceleration coverage
+    Q = np.diag([1.5**2, 150.0**2])
+    # R: measurement noise variance
+    R = 50.0
 
     # Storage for aggregate histograms
     all_vel_residuals = {}   # {rpm: [arr, ...]}
@@ -501,8 +551,24 @@ def main():
             acc_ckf = x_est[:, 1]
 
             # RPM RMSE
-            rpm_rmse = np.sqrt(np.mean((rpm_actual - rpm_ckf)**2))
+            rpm_err = rpm_actual - rpm_ckf
+            rpm_rmse = np.sqrt(np.mean(rpm_err**2))
             print(f'    RPM RMSE: {rpm_rmse:.4f}')
+
+            # Numerical acceleration for 3-sigma comparison
+            acc_num = np.zeros_like(rpm_actual)
+            acc_num[1:-1] = ((rpm_actual[2:] - rpm_actual[:-2])
+                             / (t_actual[2:] - t_actual[:-2]))
+            acc_num[0] = acc_num[1]
+            acc_num[-1] = acc_num[-2]
+            acc_err = acc_num - acc_ckf
+
+            # ── 3-sigma analysis ──
+            rpm_3s_pct, acc_3s_pct = plot_3sigma_bounds(
+                t_a, rpm_err, acc_err, P_est,
+                rpm_folder, ti, out_dir)
+            print(f'    3-sigma: RPM {rpm_3s_pct:.1f}%, '
+                  f'Acc {acc_3s_pct:.1f}%')
 
             # ── Plot overviews ──
             plot_rpm_overview(t_a, rpm_actual, t_a, rpm_ckf,
@@ -592,6 +658,8 @@ def main():
             summary_rows.append([
                 rpm_folder, f'test{ti}',
                 f'{rpm_rmse:.4f}',
+                f'{rpm_3s_pct:.1f}',
+                f'{acc_3s_pct:.1f}',
                 f'{vel_fit_rmse:.4f}' if not np.isnan(vel_fit_rmse) else 'N/A',
                 f'{vel_A:.1f}' if not np.isnan(vel_A) else 'N/A',
                 f'{vel_f:.4f}' if not np.isnan(vel_f) else 'N/A',

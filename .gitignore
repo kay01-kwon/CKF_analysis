@@ -2,3 +2,4 @@
 Bag/**
 **/*.db3
 **/*.yaml
+__pycache__/

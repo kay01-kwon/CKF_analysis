@@ -1,4 +1,5 @@
 .idea
 Bag/**
 **/*.db3
-**/*.yamlckf/__pycache__/
+**/*.yaml
+__pycache__/

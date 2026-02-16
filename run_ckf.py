@@ -69,6 +69,11 @@ def sine_model(t, A, f, phi, offset):
     return A * np.sin(2.0 * np.pi * f * t + phi) + offset
 
 
+def sine_derivative(t, A, f, phi):
+    """d/dt [A * sin(2*pi*f*t + phi) + offset] = 2*pi*f*A * cos(2*pi*f*t + phi)"""
+    return 2.0 * np.pi * f * A * np.cos(2.0 * np.pi * f * t + phi)
+
+
 def detect_sine_region(t_cmd, cmd_rpm, t_sig, sig):
     """
     Use the command signal to find the sine-wave region:
@@ -494,10 +499,10 @@ def main():
     )
 
     # ── CKF tuning ──
-    # Tuned for ~99.7% RPM 3-sigma coverage and ~98% acceleration coverage
-    Q = np.diag([1.5**2, 150.0**2])
-    # R: measurement noise variance
-    R = 50.0
+    # Large Q_alpha lets the RTS smoother track acceleration accurately;
+    # R reflects measurement noise variance of the FOC-estimated RPM.
+    Q = np.diag([1.0, 500000.0])
+    R = 150.0
 
     # Storage for aggregate histograms
     all_vel_residuals = {}   # {rpm: [arr, ...]}
@@ -541,35 +546,16 @@ def main():
             t_a = t_actual - t0
             t_c = t_cmd - t0
 
-            # ── Run CKF ──
+            # ── Run CKF + RTS smoother ──
             x_est, P_est = run_ckf(
                 t_actual, rpm_actual, t_cmd, cmd_rpm,
                 param, Q, R,
                 x0=np.array([rpm_actual[0], 0.0]),
                 P0=np.diag([10.0, 100.0]),
+                smooth=True,
             )
             rpm_ckf = x_est[:, 0]
             acc_ckf = x_est[:, 1]
-
-            # RPM RMSE
-            rpm_err = rpm_actual - rpm_ckf
-            rpm_rmse = np.sqrt(np.mean(rpm_err**2))
-            print(f'    RPM RMSE: {rpm_rmse:.4f}')
-
-            # Numerical acceleration for 3-sigma comparison
-            acc_num = np.zeros_like(rpm_actual)
-            acc_num[1:-1] = ((rpm_actual[2:] - rpm_actual[:-2])
-                             / (t_actual[2:] - t_actual[:-2]))
-            acc_num[0] = acc_num[1]
-            acc_num[-1] = acc_num[-2]
-            acc_err = acc_num - acc_ckf
-
-            # ── 3-sigma analysis ──
-            rpm_3s_pct, acc_3s_pct = plot_3sigma_bounds(
-                t_a, rpm_err, acc_err, P_est,
-                rpm_folder, ti, out_dir)
-            print(f'    3-sigma: RPM {rpm_3s_pct:.1f}%, '
-                  f'Acc {acc_3s_pct:.1f}%')
 
             # ── Plot overviews ──
             plot_rpm_overview(t_a, rpm_actual, t_a, rpm_ckf,
@@ -584,9 +570,9 @@ def main():
             vel_fit_rmse = np.nan
             vel_A = np.nan
             vel_f = np.nan
-            acc_fit_rmse = np.nan
-            acc_A = np.nan
-            acc_f = np.nan
+            rpm_rmse = np.nan
+            rpm_3s_pct = np.nan
+            acc_3s_pct = np.nan
 
             if sine_info[0] is not None:
                 sine_start, sine_end, period = sine_info
@@ -594,79 +580,107 @@ def main():
                 print(f'    Sine region: [{sine_start - t0:.2f}, '
                       f'{sine_end - t0:.2f}] s, period={period:.4f} s')
 
-                # 1) Velocity sine fit (CKF output)
-                seg = extract_sine_segment(
-                    t_actual, rpm_ckf, sine_start, sine_end, period,
+                # 1) Fit sine to ACTUAL RPM (measurement) for ground truth
+                seg_meas = extract_sine_segment(
+                    t_actual, rpm_actual, sine_start, sine_end, period,
                     exclude_cycles=1)
-                if seg[0] is not None:
-                    t_seg_v, sig_seg_v = seg
-                    popt_v = fit_sine(t_seg_v - t_seg_v[0], sig_seg_v,
-                                      f_guess)
+                if seg_meas[0] is not None:
+                    t_seg, meas_seg = seg_meas
+                    t_shifted = t_seg - t_seg[0]
+                    popt_v = fit_sine(t_shifted, meas_seg, f_guess)
+
                     if popt_v is not None:
                         vel_A, vel_f = popt_v[0], popt_v[1]
-                        fitted_v = sine_model(t_seg_v - t_seg_v[0], *popt_v)
-                        vel_fit_rmse = np.sqrt(
-                            np.mean((sig_seg_v - fitted_v)**2))
-                        print(f'    Velocity sine fit: A={vel_A:.1f} RPM, '
-                              f'f={vel_f:.4f} Hz, RMSE={vel_fit_rmse:.2f}')
-                        plot_sine_fit(t_seg_v - t0, sig_seg_v, popt_v,
+                        A_fit, f_fit, phi_fit, offset_fit = popt_v
+
+                        # Velocity ground truth = fitted sine on actual RPM
+                        vel_true = sine_model(t_shifted, *popt_v)
+                        meas_fit_rmse = np.sqrt(
+                            np.mean((meas_seg - vel_true)**2))
+                        print(f'    Sine fit on actual RPM: A={vel_A:.1f}, '
+                              f'f={vel_f:.4f} Hz, RMSE={meas_fit_rmse:.2f}')
+
+                        # Plot sine fit (actual RPM data vs fitted sine)
+                        plot_sine_fit(t_seg - t0, meas_seg, popt_v,
                                       'RPM', rpm_folder, ti,
                                       'velocity', out_dir)
 
-                        v_resid = sig_seg_v - fitted_v
+                        # Extract smoothed CKF on same segment
+                        seg_mask = ((t_actual >= t_seg[0])
+                                    & (t_actual <= t_seg[-1]))
+                        ckf_vel_seg = rpm_ckf[seg_mask]
+                        ckf_acc_seg = acc_ckf[seg_mask]
+
+                        # Velocity error = CKF_rpm - fitted_sine(t)
+                        vel_err = ckf_vel_seg - vel_true
+                        vel_fit_rmse = np.sqrt(np.mean(vel_err**2))
+                        print(f'    CKF vel vs truth: RMSE={vel_fit_rmse:.2f}')
+
                         plot_residual_histogram(
-                            v_resid, 'Velocity Residual [RPM]',
+                            vel_err, 'Velocity Residual [RPM]',
                             rpm_folder, ti, 'vel_residual', out_dir)
-                        all_vel_residuals[rpm_folder].append(v_resid)
+                        all_vel_residuals[rpm_folder].append(vel_err)
 
                         plot_values_histogram(
-                            sig_seg_v, 'CKF Velocity [RPM]',
+                            ckf_vel_seg, 'CKF Velocity [RPM]',
                             rpm_folder, ti, 'vel_values', out_dir)
-                        all_vel_values[rpm_folder].append(sig_seg_v)
+                        all_vel_values[rpm_folder].append(ckf_vel_seg)
 
-                # 2) Acceleration sine fit (CKF output)
-                seg_a = extract_sine_segment(
-                    t_actual, acc_ckf, sine_start, sine_end, period,
-                    exclude_cycles=1)
-                if seg_a[0] is not None:
-                    t_seg_a, sig_seg_a = seg_a
-                    popt_a = fit_sine(t_seg_a - t_seg_a[0], sig_seg_a,
-                                      f_guess)
-                    if popt_a is not None:
-                        acc_A, acc_f = popt_a[0], popt_a[1]
-                        fitted_a = sine_model(t_seg_a - t_seg_a[0], *popt_a)
-                        acc_fit_rmse = np.sqrt(
-                            np.mean((sig_seg_a - fitted_a)**2))
-                        print(f'    Accel sine fit:    A={acc_A:.1f} RPM/s, '
-                              f'f={acc_f:.4f} Hz, RMSE={acc_fit_rmse:.2f}')
-                        plot_sine_fit(t_seg_a - t0, sig_seg_a, popt_a,
-                                      'Acceleration [RPM/s]', rpm_folder, ti,
-                                      'accel', out_dir)
+                        rpm_rmse = vel_fit_rmse
 
-                        a_resid = sig_seg_a - fitted_a
+                        # 2) Acceleration ground truth = d/dt fitted_sine
+                        #    = 2*pi*f*A * cos(2*pi*f*t + phi)
+                        acc_true = sine_derivative(t_shifted,
+                                                   A_fit, f_fit, phi_fit)
+                        acc_A_true = 2.0 * np.pi * f_fit * A_fit
+
+                        # Acceleration error = CKF_acc - cosine_truth
+                        acc_err = ckf_acc_seg - acc_true
+                        acc_fit_rmse = np.sqrt(np.mean(acc_err**2))
+                        print(f'    CKF acc vs truth: '
+                              f'A_true={acc_A_true:.1f} RPM/s, '
+                              f'RMSE={acc_fit_rmse:.2f}')
+
+                        # Acceleration sine fit plot (CKF data vs cosine truth)
+                        plot_sine_fit(t_seg - t0, ckf_acc_seg,
+                                      [acc_A_true, f_fit,
+                                       phi_fit + np.pi / 2, 0.0],
+                                      'Acceleration [RPM/s]',
+                                      rpm_folder, ti, 'accel', out_dir)
+
                         plot_residual_histogram(
-                            a_resid, 'Accel Residual [RPM/s]',
+                            acc_err, 'Accel Residual [RPM/s]',
                             rpm_folder, ti, 'acc_residual', out_dir)
-                        all_acc_residuals[rpm_folder].append(a_resid)
+                        all_acc_residuals[rpm_folder].append(acc_err)
 
                         plot_values_histogram(
-                            sig_seg_a, 'CKF Acceleration [RPM/s]',
+                            ckf_acc_seg, 'CKF Acceleration [RPM/s]',
                             rpm_folder, ti, 'acc_values', out_dir)
-                        all_acc_values[rpm_folder].append(sig_seg_a)
+                        all_acc_values[rpm_folder].append(ckf_acc_seg)
+
+                        # 3) 3-sigma analysis on the trimmed segment
+                        #    using fitted sine/cosine as ground truth
+                        P_seg = P_est[seg_mask]
+
+                        rpm_3s_pct, acc_3s_pct = plot_3sigma_bounds(
+                            t_seg - t0, vel_err, acc_err,
+                            P_seg, rpm_folder, ti, out_dir)
+                        print(f'    3-sigma: RPM {rpm_3s_pct:.1f}%, '
+                              f'Acc {acc_3s_pct:.1f}%')
             else:
                 print('    [WARN] Could not detect sine region from cmd')
 
             summary_rows.append([
                 rpm_folder, f'test{ti}',
-                f'{rpm_rmse:.4f}',
-                f'{rpm_3s_pct:.1f}',
-                f'{acc_3s_pct:.1f}',
+                f'{rpm_rmse:.4f}' if not np.isnan(rpm_rmse) else 'N/A',
+                f'{rpm_3s_pct:.1f}' if not np.isnan(rpm_3s_pct) else 'N/A',
+                f'{acc_3s_pct:.1f}' if not np.isnan(acc_3s_pct) else 'N/A',
                 f'{vel_fit_rmse:.4f}' if not np.isnan(vel_fit_rmse) else 'N/A',
                 f'{vel_A:.1f}' if not np.isnan(vel_A) else 'N/A',
                 f'{vel_f:.4f}' if not np.isnan(vel_f) else 'N/A',
                 f'{acc_fit_rmse:.4f}' if not np.isnan(acc_fit_rmse) else 'N/A',
-                f'{acc_A:.1f}' if not np.isnan(acc_A) else 'N/A',
-                f'{acc_f:.4f}' if not np.isnan(acc_f) else 'N/A',
+                f'{acc_A_true:.1f}' if not np.isnan(rpm_rmse) else 'N/A',
+                f'{vel_f:.4f}' if not np.isnan(vel_f) else 'N/A',
             ])
 
     # ── Aggregate histograms ──

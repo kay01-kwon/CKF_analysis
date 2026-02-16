@@ -82,7 +82,7 @@ def extract_all_bags(base_dir, rpm_folders=None, num_tests=5):
     Extract bag data from multiple RPM folders.
 
     Args:
-        base_dir: Base directory (e.g., 'CKF')
+        base_dir: Base directory (e.g., 'Bag')
         rpm_folders: List of RPM folder names (default: ['4000RPM', '5000RPM'])
         num_tests: Number of test bags per RPM folder
 
@@ -114,7 +114,7 @@ def extract_all_bags(base_dir, rpm_folders=None, num_tests=5):
 
 if __name__ == '__main__':
     # Example usage
-    all_data = extract_all_bags('CKF', rpm_folders=['4000RPM', '5000RPM'], num_tests=5)
+    all_data = extract_all_bags('Bag', rpm_folders=['4000RPM', '5000RPM'], num_tests=5)
 
     for rpm, tests in all_data.items():
         print(f'\n=== {rpm}: {len(tests)} bags loaded ===')
